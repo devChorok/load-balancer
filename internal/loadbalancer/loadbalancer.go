@@ -5,7 +5,11 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/devChorok/load-balancer/internal/loadbalancer/algorithms"
+	lc "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_connections"
+	ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
+	rr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
+	wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighed_round_robin"
+
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 const (
@@ -27,19 +31,21 @@ func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
 
     switch algorithmType {
     case AlgorithmRoundRobin:
-        algorithm = algorithms.NewRoundRobin(nodes)
+        algorithm = rr.NewRoundRobin(nodes)
     case AlgorithmWeightedRoundRobin:
-        algorithm = algorithms.NewWeightedRoundRobin(nodes)
+        algorithm = wrr.NewWeightedRoundRobin(nodes)
     case AlgorithmLeastConnections:
-        algorithm = algorithms.NewLeastConnections(nodes)
+        algorithm = lc.NewLeastConnections(nodes)
     case AlgorithmLeastLoaded:
-        algorithm = algorithms.NewLeastLoaded(nodes)
+        algorithm = ll.NewLeastLoaded(nodes)
     default:
-        algorithm = algorithms.NewRoundRobin(nodes) // Default to round robin
+        algorithm = rr.NewRoundRobin(nodes) // Default to round robin
     }
 
     return &LoadBalancer{algorithm: algorithm}
 }
+
+
 // ServeHTTP handles HTTP requests and forwards them to the appropriate backend node
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // Select the next node using the chosen algorithm
