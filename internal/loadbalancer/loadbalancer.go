@@ -5,47 +5,64 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/devChorok/load-balancer/internal/loadbalancer/algorithms"
 	"github.com/devChorok/load-balancer/pkg/types"
 )
-
+const (
+    AlgorithmRoundRobin        = "round_robin"
+    AlgorithmWeightedRoundRobin = "weighted_round_robin"
+    AlgorithmLeastConnections   = "least_connections"
+    AlgorithmLeastLoaded        = "least_loaded"
+)
 type LoadBalancer struct {
-    nodes       []*types.Node
-    rateLimiter *RateLimiter
+    algorithm Algorithm
 }
 
-func NewLoadBalancer(nodes []*types.Node) *LoadBalancer {
-    return &LoadBalancer{
-        nodes:       nodes,
-        rateLimiter: NewRateLimiter(nodes),
+type Algorithm interface {
+    NextNode() *types.Node
+}
+
+func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
+    var algorithm Algorithm
+
+    switch algorithmType {
+    case AlgorithmRoundRobin:
+        algorithm = algorithms.NewRoundRobin(nodes)
+    case AlgorithmWeightedRoundRobin:
+        algorithm = algorithms.NewWeightedRoundRobin(nodes)
+    case AlgorithmLeastConnections:
+        algorithm = algorithms.NewLeastConnections(nodes)
+    case AlgorithmLeastLoaded:
+        algorithm = algorithms.NewLeastLoaded(nodes)
+    default:
+        algorithm = algorithms.NewRoundRobin(nodes) // Default to round robin
     }
-}
 
-func (lb *LoadBalancer) getNode() *types.Node {
-    node := lb.nodes[0]
-    lb.nodes = append(lb.nodes[1:], node)
-    return node
+    return &LoadBalancer{algorithm: algorithm}
 }
-
+// ServeHTTP handles HTTP requests and forwards them to the appropriate backend node
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-    node := lb.getNode()
-
-    requestSize := int64(r.ContentLength)
-    result := lb.rateLimiter.AllowRequest(node, requestSize)
-
-    if !result.Allow {
-        http.Error(w, result.Error, http.StatusTooManyRequests)
-        return
-    }
+    // Select the next node using the chosen algorithm
+    node := lb.NextNode()
 
     // Forward the request to the selected node
     resp, err := http.Post(node.Address, r.Header.Get("Content-Type"), r.Body)
     if err != nil {
-        log.Println(err)
+        log.Printf("Failed to forward request to %s: %v", node.Address, err)
         http.Error(w, "Failed to forward request", http.StatusInternalServerError)
         return
     }
     defer resp.Body.Close()
 
+    // Copy the response from the selected node back to the client
+    for k, v := range resp.Header {
+        w.Header()[k] = v
+    }
+    w.WriteHeader(resp.StatusCode)
     body, _ := ioutil.ReadAll(resp.Body)
     w.Write(body)
+}
+
+func (lb *LoadBalancer) NextNode() *types.Node {
+    return lb.algorithm.NextNode()
 }

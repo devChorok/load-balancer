@@ -6,6 +6,7 @@ type Node struct {
     RPM          int   // Requests Per Minute
     CurrentBPM   int64
     CurrentRPM   int
+	Weight       int    // Weight for weighted round-robin
 }
 
 type RateLimitResult struct {
