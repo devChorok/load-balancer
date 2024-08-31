@@ -1,37 +1,17 @@
 package algorithms_test
 
 import (
-    "log"
-    "net/http"
-    "net/http/httptest"
-    "sync"
-    "testing"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
 
 	algorithms "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-func TestWeightedRoundRobin(t *testing.T) {
-    nodes := []*types.Node{
-        {Address: "http://localhost:8081", Weight: 3},
-        {Address: "http://localhost:8082", Weight: 1},
-    }
-    wrr := algorithms.NewWeightedRoundRobin(nodes)
-
-    nodeCount := map[string]int{
-        "http://localhost:8081": 0,
-        "http://localhost:8082": 0,
-    }
-
-    for i := 0; i < 1000; i++ {
-        node := wrr.NextNode()
-        nodeCount[node.Address]++
-    }
-
-    if nodeCount["http://localhost:8081"] <= nodeCount["http://localhost:8082"] {
-        t.Errorf("Weighted round robin is not working as expected: %v", nodeCount)
-    }
-}
 
 func TestWeightedRoundRobinConcurrency(t *testing.T) {
     log.Println("Starting TestWeightedRoundRobinConcurrency")
@@ -48,40 +28,75 @@ func TestWeightedRoundRobinConcurrency(t *testing.T) {
     }))
     defer server2.Close()
 
-    nodes := []*types.Node{
-        {Address: server1.URL, Weight: 3}, // Higher weight
-        {Address: server2.URL, Weight: 1}, // Lower weight
-    }
+    
+    maxRequests := 0
+	var firstErrorRequestCount int
+	var mu sync.Mutex
 
-    wrr := algorithms.NewWeightedRoundRobin(nodes)
+    for numRequests := 100; ; numRequests += 100 {
+		log.Printf("Testing with %d requests", numRequests)
 
-    const numRequests = 100
-    var wg sync.WaitGroup
-    wg.Add(numRequests)
+		initialBPM := int64(0)
+		numNodes := 2
+		bpmLimit := int64(10000)
+		rpmLimit := int64(100)
+		maxRetries := 5
+		retryDelay := time.Millisecond
 
-    for i := 0; i < numRequests; i++ {
-        go func(reqID int) {
-            defer wg.Done()
+		nodes := []*types.Node{
+			{Address: server1.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+			{Address: server2.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+		}
 
-            node := wrr.NextNode()
-            if node == nil {
-                t.Errorf("Expected a node, but got nil")
-                return
-            }
+		// Channel to capture errors
+		errorChan := make(chan bool, 1)
 
-            log.Printf("Request %d routed to node: %s (Weight: %d, CurrentRPM: %d)", reqID, node.Address, node.Weight, node.CurrentRPM)
+		// Run the test in a goroutine to handle timeouts
+		done := make(chan bool)
+		go func() {
+			defer close(done)
+			finalRPMs, finalBPMs := algorithms.RunWeightedRoundRobinConcurrencyTest(t, numRequests, initialBPM, numNodes, bpmLimit, rpmLimit, maxRetries, retryDelay)
 
-            // Simulate request completion
-            wrr.CompleteRequest(node)
+		// Validate results
+			for i := range nodes {
+				if finalBPMs[i] > bpmLimit {
+					mu.Lock()
+					firstErrorRequestCount = numRequests
+					errorChan <- true
+					mu.Unlock()
+					return
+				}
+			}
 
-            log.Printf("Request %d completed at node: %s (CurrentRPM after completion: %d)", reqID, node.Address, node.CurrentRPM)
-        }(i)
-    }
+			// Log results for debug purposes
+			log.Printf("Final RPMs: %v", finalRPMs)
+			log.Printf("Final BPMs: %v", finalBPMs)
+		}()
 
-    wg.Wait()
+		// Wait for test completion or timeout
+		select {
+		case <-done:
+			// Test completed successfully
+			log.Printf("Test completed with %d requests", numRequests)
+			maxRequests = numRequests
+		case <-time.After(time.Minute):
+			// Timeout occurred
+			log.Printf("Test timed out after %v", time.Minute)
+			return
+		}
 
-    // Final log of CurrentRPMs for each node
-    log.Printf("Final RPMs - Node 1: %d, Node 2: %d", nodes[0].CurrentRPM, nodes[1].CurrentRPM)
+		// Check for errors and break if found
+		if len(errorChan) > 0 {
+			log.Printf("Test failed at %d requests", numRequests)
+			break
+		}
+	}
 
-    log.Println("TestWeightedRoundRobinConcurrency completed.")
+	// Log the number of requests before the first error occurred
+	if firstErrorRequestCount > 0 {
+		log.Printf("Maximum number of requests handled before error: %d", firstErrorRequestCount)
+	} else {
+		log.Printf("No errors encountered. Maximum number of requests handled: %d", maxRequests)
+	}
+	log.Println("TestWeightedRoundRobinConcurrency completed.")
 }

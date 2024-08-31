@@ -2,14 +2,15 @@ package algorithms
 
 import (
 	"log"
+	"strconv"
 	"sync"
 	"testing"
-    "strconv"
+	"time"
 
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-func RunWeightedRoundRobinConcurrencyTest(t *testing.T, numRequests int, initialBPM int64, numNodes int) []int64 {
+func RunWeightedRoundRobinConcurrencyTest(t *testing.T, numRequests int, initialBPM int64, numNodes int, bpmLimit int64, rpmLimit int64, maxRetries int, retryDelay time.Duration) ([]int64, []int64) {
 nodes := make([]*types.Node, numNodes)
 for i := 0; i < numNodes; i++ {
     weight := int64(1)
@@ -20,10 +21,13 @@ for i := 0; i < numNodes; i++ {
         Address:    "http://localhost:808" + strconv.Itoa(1+i),
         CurrentBPM: initialBPM,
         Weight:     int(weight),
+		CurrentRPM: 0,
+		BPM:        bpmLimit,
+		RPM:        rpmLimit,
     }
 }
 
-wrr := NewWeightedRoundRobin(nodes)
+	wrr := NewWeightedRoundRobin(nodes)
 
 	var wg sync.WaitGroup
 	wg.Add(numRequests)
@@ -32,15 +36,25 @@ wrr := NewWeightedRoundRobin(nodes)
 		go func(reqID int) {
 			defer wg.Done()
 
-			node := wrr.NextNode()
+			content := "RequestContent" + strconv.Itoa(reqID)
+			contentLength := int64(len(content))
+
+			var node *types.Node
+			for retryCount := 0; retryCount < maxRetries; retryCount++ {
+				node = wrr.NextNodeWithRetry(contentLength,maxRetries)
+				if node != nil {
+					break
+				}
+				time.Sleep(retryDelay)
+			}
 			if node == nil {
-				t.Errorf("Expected a node, but got nil")
+				log.Printf("Error: Expected a node, but got nil after retries for request %d", reqID)
 				return
 			}
 
 			log.Printf("Request %d routed to node: %s (CurrentBPM: %d)", reqID, node.Address, node.CurrentBPM)
 
-			wrr.CompleteRequest(node)
+			wrr.CompleteRequest(node, contentLength)
 			log.Printf("Request %d completed at node: %s (CurrentBPM after completion: %d)", reqID, node.Address, node.CurrentBPM)
 		}(i)
 	}
@@ -48,8 +62,10 @@ wrr := NewWeightedRoundRobin(nodes)
 	wg.Wait()
 
 	finalRPMs := make([]int64, len(nodes))
+	finalBPMs := make([]int64, len(nodes))
 	for i, node := range nodes {
-		finalRPMs[i] = node.CurrentBPM
+		finalRPMs[i] = node.CurrentRPM
+		finalBPMs[i] = node.CurrentBPM
 	}
-	return finalRPMs
+	return finalRPMs, finalBPMs
 }

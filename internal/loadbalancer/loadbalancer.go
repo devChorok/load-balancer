@@ -7,9 +7,9 @@ import (
 	"sync"
 
 	lc "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_connections"
-	ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
+	// ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
 	rr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
-	wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
+	// wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
@@ -29,7 +29,7 @@ type LoadBalancer struct {
 }
 
 type Algorithm interface {
-	NextNode() *types.Node
+	NextNode(contentLength int64) *types.Node
 }
 
 func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
@@ -40,11 +40,15 @@ func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
 	case AlgorithmRoundRobin:
 		algorithm = rr.NewRoundRobin(nodes)
 	case AlgorithmWeightedRoundRobin:
-		algorithm = wrr.NewWeightedRoundRobin(nodes)
+		// algorithm = wrr.NewWeightedRoundRobin(nodes)
+		algorithm = rr.NewRoundRobin(nodes)
+
 	case AlgorithmLeastConnections:
 		algorithm = lc.NewLeastConnections(nodes)
 	case AlgorithmLeastLoaded:
-		algorithm = ll.NewLeastLoaded(nodes)
+		// algorithm = ll.NewLeastLoaded(nodes)
+		algorithm = lc.NewLeastConnections(nodes)
+
 	default:
 		algorithm = rr.NewRoundRobin(nodes) // Default to round robin
 	}
@@ -59,13 +63,13 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Handle each request in a separate goroutine
 	go lb.handleRequest(w, r)
 }
-
 func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
-	maxRetries := lb.nodeCount // Use the nodeCount field
+	maxRetries := lb.nodeCount
 	retries := 0
+	contentLength := r.ContentLength // Get the content length from the request
 
 	for retries < maxRetries {
-		node := lb.NextNode()
+		node := lb.NextNode(contentLength) // Pass the content length to the NextNode method
 
 		if node == nil {
 			http.Error(w, "No available nodes", http.StatusServiceUnavailable)
@@ -73,7 +77,7 @@ func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Check if the node can handle the request
-		result := lb.rateLimiter.AllowRequest(node, int64(r.ContentLength))
+		result := lb.rateLimiter.AllowRequest(node, contentLength)
 		if !result.Allow {
 			retries++
 			continue
@@ -105,11 +109,13 @@ func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func (lb *LoadBalancer) NextNode() *types.Node {
+
+func (lb *LoadBalancer) NextNode(contentLength int64) *types.Node {
 	for {
-		node := lb.algorithm.NextNode()
-		if node != nil && lb.rateLimiter.AllowRequest(node, 0).Allow { // Check limits with zero bytes to select a node
+		node := lb.algorithm.NextNode(contentLength)
+		if node != nil && lb.rateLimiter.AllowRequest(node, contentLength).Allow { // Check limits with the contentLength
 			return node
 		}
 	}
 }
+

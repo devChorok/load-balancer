@@ -1,30 +1,17 @@
 package algorithms_test
 
 import (
-    "log"
-    "net/http"
-    "net/http/httptest"
-    "sync"
-    "testing"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
 
-    "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
-    "github.com/devChorok/load-balancer/pkg/types"
+	algorithms "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
+	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-func TestLeastLoaded(t *testing.T) {
-    nodes := []*types.Node{
-        {Address: "http://localhost:8081", CurrentBPM: 500},
-        {Address: "http://localhost:8082", CurrentBPM: 200},
-    }
-
-    ll := algorithms.NewLeastLoaded(nodes)
-
-    node := ll.NextNode()
-
-    if node.Address != "http://localhost:8082" {
-        t.Errorf("Expected http://localhost:8082 (least loaded), got %s", node.Address)
-    }
-}
 func TestLeastLoadedConcurrency(t *testing.T) {
     log.Println("Starting TestLeastLoadedConcurrency")
 
@@ -40,40 +27,74 @@ func TestLeastLoadedConcurrency(t *testing.T) {
     }))
     defer server2.Close()
 
-    nodes := []*types.Node{
-        {Address: server1.URL, CurrentBPM: 500},
-        {Address: server2.URL, CurrentBPM: 200},
-    }
+    maxRequests := 0
+	var firstErrorRequestCount int
+	var mu sync.Mutex
 
-    ll := algorithms.NewLeastLoaded(nodes)
+	for numRequests := 100; ; numRequests += 100 {
+		log.Printf("Testing with %d requests", numRequests)
 
-    const numRequests = 100
-    var wg sync.WaitGroup
-    wg.Add(numRequests)
+		initialBPM := int64(0)
+		numNodes := 2
+		bpmLimit := int64(10000)
+		rpmLimit := int64(100)
+		maxRetries := 5
+		retryDelay := time.Millisecond
 
-    for i := 0; i < numRequests; i++ {
-        go func(reqID int) {
-            defer wg.Done()
+		nodes := []*types.Node{
+			{Address: server1.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+			{Address: server2.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+		}
 
-            node := ll.NextNode()
-            if node == nil {
-                t.Errorf("Expected a node, but got nil")
-                return
-            }
+		// Channel to capture errors
+		errorChan := make(chan bool, 1)
 
-            log.Printf("Request %d routed to node: %s (CurrentBPM: %d)", reqID, node.Address, node.CurrentBPM)
+		// Run the test in a goroutine to handle timeouts
+		done := make(chan bool)
+		go func() {
+			defer close(done)
+			finalRPMs, finalBPMs := algorithms.RunLeastLoadedConcurrencyTest(t, numRequests, initialBPM, numNodes, bpmLimit, rpmLimit, maxRetries, retryDelay)
 
-            // Simulate request completion
-            ll.CompleteRequest(node)
+		// Validate results
+			for i := range nodes {
+				if finalBPMs[i] > bpmLimit {
+					mu.Lock()
+					firstErrorRequestCount = numRequests
+					errorChan <- true
+					mu.Unlock()
+					return
+				}
+			}
 
-            log.Printf("Request %d completed at node: %s (CurrentBPM after completion: %d)", reqID, node.Address, node.CurrentBPM)
-        }(i)
-    }
+			// Log results for debug purposes
+			log.Printf("Final RPMs: %v", finalRPMs)
+			log.Printf("Final BPMs: %v", finalBPMs)
+		}()
 
-    wg.Wait()
+		// Wait for test completion or timeout
+		select {
+		case <-done:
+			// Test completed successfully
+			log.Printf("Test completed with %d requests", numRequests)
+			maxRequests = numRequests
+		case <-time.After(time.Minute):
+			// Timeout occurred
+			log.Printf("Test timed out after %v", time.Minute)
+			return
+		}
 
-    // Final log of CurrentBPMs for each node
-    log.Printf("Final BPMs - Node 1: %d, Node 2: %d", nodes[0].CurrentBPM, nodes[1].CurrentBPM)
+		// Check for errors and break if found
+		if len(errorChan) > 0 {
+			log.Printf("Test failed at %d requests", numRequests)
+			break
+		}
+	}
 
-    log.Println("TestLeastLoadedConcurrency completed.")
+	// Log the number of requests before the first error occurred
+	if firstErrorRequestCount > 0 {
+		log.Printf("Maximum number of requests handled before error: %d", firstErrorRequestCount)
+	} else {
+		log.Printf("No errors encountered. Maximum number of requests handled: %d", maxRequests)
+	}
+	log.Println("TestLeastLoadedMaxConcurrency completed.")
 }

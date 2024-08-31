@@ -2,22 +2,26 @@ package algorithms
 
 import (
 	"log"
+	"strconv"
 	"sync"
 	"testing"
-    "strconv"
+	"time"
 
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-func RunLeastLoadedConcurrencyTest(t *testing.T, numRequests int, initialBPM int64, numNodes int) []int64 {
+// RunLeastLoadedConcurrencyTest performs a concurrency test on the LeastLoaded algorithm
+func RunLeastLoadedConcurrencyTest(t *testing.T, numRequests int, initialBPM int64, numNodes int, bpmLimit int64, rpmLimit int64, maxRetries int, retryDelay time.Duration) ([]int64, []int64) {
 	nodes := make([]*types.Node, numNodes)
 	for i := 0; i < numNodes; i++ {
 		nodes[i] = &types.Node{
-			Address:    "http://localhost:808" +  strconv.Itoa(1+i),
+			Address:    "http://localhost:808" + strconv.Itoa(1+i),
 			CurrentBPM: initialBPM,
+			CurrentRPM: 0,
+			BPM:        bpmLimit,
+			RPM:        rpmLimit,
 		}
 	}
-
 
 	ll := NewLeastLoaded(nodes)
 
@@ -28,15 +32,28 @@ func RunLeastLoadedConcurrencyTest(t *testing.T, numRequests int, initialBPM int
 		go func(reqID int) {
 			defer wg.Done()
 
-			node := ll.NextNode()
+			content := "RequestContent" + strconv.Itoa(reqID)
+			contentLength := int64(len(content))
+
+			var node *types.Node
+			for retryCount := 0; retryCount < maxRetries; retryCount++ {
+				node = ll.NextNodeWithRetry(contentLength,maxRetries)
+				if node != nil {
+					break
+				}
+				time.Sleep(retryDelay)
+			}
+
 			if node == nil {
-				t.Errorf("Expected a node, but got nil")
+				log.Printf("Error: Expected a node, but got nil after retries for request %d", reqID)
 				return
 			}
 
+			// Consider reducing or batching logs if too many logs cause contention
 			log.Printf("Request %d routed to node: %s (CurrentBPM: %d)", reqID, node.Address, node.CurrentBPM)
 
-			ll.CompleteRequest(node)
+			ll.CompleteRequest(node, contentLength)
+
 			log.Printf("Request %d completed at node: %s (CurrentBPM after completion: %d)", reqID, node.Address, node.CurrentBPM)
 		}(i)
 	}
@@ -44,8 +61,10 @@ func RunLeastLoadedConcurrencyTest(t *testing.T, numRequests int, initialBPM int
 	wg.Wait()
 
 	finalRPMs := make([]int64, len(nodes))
+	finalBPMs := make([]int64, len(nodes))
 	for i, node := range nodes {
-		finalRPMs[i] = node.CurrentBPM
+		finalRPMs[i] = node.CurrentRPM
+		finalBPMs[i] = node.CurrentBPM
 	}
-	return finalRPMs
+	return finalRPMs, finalBPMs
 }

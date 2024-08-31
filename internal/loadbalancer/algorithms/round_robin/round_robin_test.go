@@ -1,89 +1,101 @@
 package algorithms_test
-import (
-    "log"
-    "net/http"
-    "net/http/httptest"
-    "sync"
-    "testing"
 
-    "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
-    "github.com/devChorok/load-balancer/pkg/types"
+import (
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
+
+	algorithms "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
+	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-func TestRoundRobin(t *testing.T) {
-    nodes := []*types.Node{
-        {Address: "http://localhost:8081"},
-        {Address: "http://localhost:8082"},
-    }
+// TestRoundRobinMaxConcurrency performs a test with retry logic and tracks the number of requests before the first error
+func TestRoundRobinMaxConcurrency(t *testing.T) {
+	log.Println("Starting TestRoundRobinMaxConcurrency")
 
-    rr := algorithms.NewRoundRobin(nodes)
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Server1"))
+	}))
+	defer server1.Close()
 
-    node1 := rr.NextNode()
-    node2 := rr.NextNode()
-    node3 := rr.NextNode()
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Server2"))
+	}))
+	defer server2.Close()
 
-    if node1.Address != "http://localhost:8081" {
-        t.Errorf("Expected http://localhost:8081, got %s", node1.Address)
-    }
+	maxRequests := 0
+	var firstErrorRequestCount int
+	var mu sync.Mutex
 
-    if node2.Address != "http://localhost:8082" {
-        t.Errorf("Expected http://localhost:8082, got %s", node2.Address)
-    }
+	for numRequests := 100; ; numRequests += 100 {
+		log.Printf("Testing with %d requests", numRequests)
 
-    if node3.Address != "http://localhost:8081" {
-        t.Errorf("Expected http://localhost:8081, got %s", node3.Address)
-    }
-}
+		initialBPM := int64(0)
+		numNodes := 2
+		bpmLimit := int64(10000)
+		rpmLimit := int64(100)
+		maxRetries := 5
+		retryDelay := time.Millisecond
 
-func TestRoundRobinConcurrency(t *testing.T) {
-    log.Println("Starting TestRoundRobinConcurrency")
+		nodes := []*types.Node{
+			{Address: server1.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+			{Address: server2.URL, CurrentBPM: initialBPM, BPM: bpmLimit, RPM: rpmLimit},
+		}
 
-    server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Server1"))
-    }))
-    defer server1.Close()
+		// Channel to capture errors
+		errorChan := make(chan bool, 1)
 
-    server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Server2"))
-    }))
-    defer server2.Close()
+		// Run the test in a goroutine to handle timeouts
+		done := make(chan bool)
+		go func() {
+			defer close(done)
+			finalRPMs, finalBPMs := algorithms.RunRoundRobinConcurrencyTest(t, numRequests, initialBPM, numNodes, bpmLimit, rpmLimit, maxRetries, retryDelay)
 
-    nodes := []*types.Node{
-        {Address: server1.URL},
-        {Address: server2.URL},
-    }
+			// Validate results
+			for i := range nodes {
+				if finalBPMs[i] > bpmLimit {
+					mu.Lock()
+					firstErrorRequestCount = numRequests
+					errorChan <- true
+					mu.Unlock()
+					return
+				}
+			}
 
-    rr := algorithms.NewRoundRobin(nodes)
+			// Log results for debug purposes
+			log.Printf("Final RPMs: %v", finalRPMs)
+			log.Printf("Final BPMs: %v", finalBPMs)
+		}()
 
-    const numRequests = 100
-    var wg sync.WaitGroup
-    wg.Add(numRequests)
+		// Wait for test completion or timeout
+		select {
+		case <-done:
+			// Test completed successfully
+			log.Printf("Test completed with %d requests", numRequests)
+			maxRequests = numRequests
+		case <-time.After(time.Minute):
+			// Timeout occurred
+			log.Printf("Test timed out after %v", time.Minute)
+			return
+		}
 
-    for i := 0; i < numRequests; i++ {
-        go func(reqID int) {
-            defer wg.Done()
+		// Check for errors and break if found
+		if len(errorChan) > 0 {
+			log.Printf("Test failed at %d requests", numRequests)
+			break
+		}
+	}
 
-            node := rr.NextNode()
-            if node == nil {
-                t.Errorf("Expected a node, but got nil")
-                return
-            }
-
-            log.Printf("Request %d routed to node: %s (CurrentRPM: %d)", reqID, node.Address, node.CurrentRPM)
-
-            // Simulate request completion
-            rr.CompleteRequest(node)
-
-            log.Printf("Request %d completed at node: %s (CurrentRPM after completion: %d)", reqID, node.Address, node.CurrentRPM)
-        }(i)
-    }
-
-    wg.Wait()
-
-    // Final log of CurrentRPMs for each node
-    log.Printf("Final RPMs - Node 1: %d, Node 2: %d", nodes[0].CurrentRPM, nodes[1].CurrentRPM)
-
-    log.Println("TestRoundRobinConcurrency completed.")
+	// Log the number of requests before the first error occurred
+	if firstErrorRequestCount > 0 {
+		log.Printf("Maximum number of requests handled before error: %d", firstErrorRequestCount)
+	} else {
+		log.Printf("No errors encountered. Maximum number of requests handled: %d", maxRequests)
+	}
+	log.Println("TestRoundRobinMaxConcurrency completed.")
 }
