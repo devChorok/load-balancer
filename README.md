@@ -17,40 +17,32 @@ echo "GET http://localhost:8080" | vegeta attack -rate=10 -duration=10s | vegeta
 
 ## Findings
 
-### Implications of the Results
+### Performance Summary
+1. Least Connections
 
-#### **Round Robin Algorithm:**
+Maximum Requests Before Error: 600
+Test Duration: 0.22 seconds
+Implication: Efficient and responsive for moderate loads. Limited in handling high concurrency due to its inability to manage large volumes of requests effectively.
 
-- **Low Load, Even Distribution:** Round Robin handled 200 concurrent requests. This aligns with expectations, as Round Robin is known to perform well in scenarios with even distribution and similar node capacity. The performance under low load suggests that Round Robin operates effectively but may be influenced by factors specific to the test environment.
-  
-- **High Load, Even Distribution:** Round Robin performed significantly better under high load, handling 900 concurrent requests. This indicates that Round Robin scales well with increasing load when the distribution remains even.
+2. Least Loaded
 
-#### **Least Loaded Algorithm:**
+Maximum Requests Before Error: 600
+Test Duration: 0.25 seconds
+Implication: Similar to Least Connections in terms of performance. It performs well under moderate loads but may not scale as effectively under high concurrency.
 
-- **High Load, Unbalanced Nodes:** Least Loaded handled 900 concurrent requests, demonstrating its effectiveness in managing high loads across nodes with varying capacities. This is expected, as Least Loaded algorithms are designed to dynamically balance the load based on current node usage.
+3. Round Robin
 
-#### **Least Connections Algorithm:**
+Maximum Requests Before Error: 1200
+Test Duration: 0.81 seconds
+Implication: Provides a balance between efficiency and scalability. It handles a higher volume of requests compared to Least Connections and Least Loaded but may not be as optimal for very high concurrency.
 
-- **High Load, Varying Request Sizes:** Least Connections performed well under high load with varying request sizes, handling 900 concurrent requests. This result is in line with expectations, as the algorithm is tailored to distribute load based on the number of active connections, making it particularly effective when request sizes vary.
+4. Weighted Round Robin
 
-#### **Weighted Round Robin Algorithm:**
+Maximum Requests Before Error: 1700
+Test Duration: 10 seconds
+Implication: Exhibits the best scalability under high concurrency. It can handle the highest volume of concurrent requests efficiently. However, it has a longer test duration, which might indicate increased complexity in managing weighted distributions.
 
-- **High Load, Weighted Distribution:** Weighted Round Robin handled 900 concurrent requests, confirming its capability to distribute load effectively based on node weights under high load conditions. This algorithm is well-suited for scenarios that require accounting for differences in node capacity.
+### Trade-Offs
+- Efficiency vs. Scalability: Algorithms like Least Connections and Least Loaded are efficient and quick but may not handle very high concurrency well. On the other hand, Round Robin and Weighted Round Robin offer better scalability, with Weighted Round Robin handling the highest load, though with a longer processing time.
 
-#### **Failures in Low-Load Scenarios:**
-
-- **Scenarios 3, 5, and 8:** No algorithm passed the test in these scenarios. The failures suggest that the tested algorithms may face challenges under low-load conditions, particularly when nodes are unbalanced or request sizes vary. These results highlight areas where the current algorithms may not be as effective.
-
-### Does It Fit Known Behaviors?
-
-- **Round Robin:** The performance in evenly distributed scenarios fits well with known behaviors. It is effective in environments with consistent, predictable traffic but may face challenges under more complex conditions.
-
-- **Least Loaded and Least Connections:** These results align with expectations. These algorithms excel in scenarios where dynamic load balancing based on current conditions is critical.
-
-- **Weighted Round Robin:** As anticipated, this algorithm performs well in scenarios involving weighted distribution under high load, confirming its intended use case.
-
-- **Failures in Low-Load Scenarios:** The difficulties encountered in low-load, unbalanced, or varying request size scenarios suggest that these algorithms may be particularly optimized for high load or balanced conditions.
-
-### Conclusion
-
-The results show that the algorithms tested performed admirably in high-load scenarios but encountered challenges in certain low-load or unbalanced situations. This is consistent with the known characteristics of these algorithms, which are generally optimized for environments with significant traffic. The findings indicate that while these algorithms are reliable under heavy load, there may be opportunities to develop more adaptive algorithms that can handle a broader range of conditions, especially in environments with uneven node capacity or varying request sizes.
+- Complexity vs. Performance: Simple algorithms like Round Robin are easy to implement and understand but may not be as performant under high load as more complex algorithms like Weighted Round Robin, which take server capacities into account.

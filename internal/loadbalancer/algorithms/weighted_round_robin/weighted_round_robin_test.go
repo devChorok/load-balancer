@@ -1,6 +1,7 @@
 package algorithms_test
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -12,28 +13,30 @@ import (
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
-
 func TestWeightedRoundRobinConcurrency(t *testing.T) {
-    log.Println("Starting TestWeightedRoundRobinConcurrency")
+	log.Println("Starting TestWeightedRoundRobinConcurrency")
 
-    server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Server1"))
-    }))
-    defer server1.Close()
+	// Setup mock servers
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Server1"))
+	}))
+	defer server1.Close()
 
-    server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Server2"))
-    }))
-    defer server2.Close()
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Server2"))
+	}))
+	defer server2.Close()
 
-    
-    maxRequests := 0
-	var firstErrorRequestCount int
+	maxRequests := 0
 	var mu sync.Mutex
 
-    for numRequests := 100; ; numRequests += 100 {
+	// Use context with a 10-second timeout for the test
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for numRequests := 100; ; numRequests += 100 {
 		log.Printf("Testing with %d requests", numRequests)
 
 		initialBPM := int64(0)
@@ -49,20 +52,20 @@ func TestWeightedRoundRobinConcurrency(t *testing.T) {
 		}
 
 		// Channel to capture errors
-		errorChan := make(chan bool, 1)
+		errorChan := make(chan struct{}, 1)
 
 		// Run the test in a goroutine to handle timeouts
-		done := make(chan bool)
+		done := make(chan struct{})
 		go func() {
 			defer close(done)
+
 			finalRPMs, finalBPMs := algorithms.RunWeightedRoundRobinConcurrencyTest(t, numRequests, initialBPM, numNodes, bpmLimit, rpmLimit, maxRetries, retryDelay)
 
-		// Validate results
+			// Validate results
 			for i := range nodes {
 				if finalBPMs[i] > bpmLimit {
 					mu.Lock()
-					firstErrorRequestCount = numRequests
-					errorChan <- true
+					errorChan <- struct{}{}
 					mu.Unlock()
 					return
 				}
@@ -79,24 +82,20 @@ func TestWeightedRoundRobinConcurrency(t *testing.T) {
 			// Test completed successfully
 			log.Printf("Test completed with %d requests", numRequests)
 			maxRequests = numRequests
-		case <-time.After(time.Minute):
+		case <-ctx.Done():
 			// Timeout occurred
-			log.Printf("Test timed out after %v", time.Minute)
+			log.Printf("Test timed out after 10sec: concurrent %v",maxRequests)
 			return
 		}
 
 		// Check for errors and break if found
-		if len(errorChan) > 0 {
+		select {
+		case <-errorChan:
 			log.Printf("Test failed at %d requests", numRequests)
 			break
+		default:
+			log.Println("TestWeightedRoundRobinConcurrency completed.")
 		}
 	}
 
-	// Log the number of requests before the first error occurred
-	if firstErrorRequestCount > 0 {
-		log.Printf("Maximum number of requests handled before error: %d", firstErrorRequestCount)
-	} else {
-		log.Printf("No errors encountered. Maximum number of requests handled: %d", maxRequests)
-	}
-	log.Println("TestWeightedRoundRobinConcurrency completed.")
 }
