@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -36,9 +37,11 @@ func (rl *RateLimiter) AllowRequest(node *types.Node, requestSize int64) types.R
 	}
 
 	if node.CurrentBPM+requestSize > node.BPM {
+		log.Printf("[WARN] Node %s BPM limit exceeded: CurrentBPM=%d, RequestSize=%d, BPM=%d", node.Address, node.CurrentBPM, requestSize, node.BPM)
 		return types.RateLimitResult{Allow: false, Error: "BPM limit exceeded"}
 	}
 	if node.CurrentRPM+1 > node.RPM {
+		log.Printf("[WARN] Node %s RPM limit exceeded: CurrentRPM=%d, RPM=%d", node.Address, node.CurrentRPM, node.RPM)
 		return types.RateLimitResult{Allow: false, Error: "RPM limit exceeded"}
 	}
 
@@ -48,3 +51,4 @@ func (rl *RateLimiter) AllowRequest(node *types.Node, requestSize int64) types.R
 
 	return types.RateLimitResult{Allow: true}
 }
+
