@@ -9,7 +9,7 @@ import (
 	lc "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_connections"
 	ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
 	rr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
-	wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighed_round_robin"
+	wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
@@ -23,6 +23,8 @@ const (
 type LoadBalancer struct {
 	algorithm   Algorithm
 	rateLimiter *RateLimiter
+    nodeCount   int
+
 	mu          sync.Mutex
 }
 
@@ -50,14 +52,19 @@ func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
 	return &LoadBalancer{
 		algorithm:   algorithm,
 		rateLimiter: rateLimiter,
+        nodeCount:len(nodes),
 	}
 }
-
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
+	// Handle each request in a separate goroutine
+	go lb.handleRequest(w, r)
+}
 
-	for {
+func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
+	maxRetries := lb.nodeCount // Use the nodeCount field
+	retries := 0
+
+	for retries < maxRetries {
 		node := lb.NextNode()
 
 		if node == nil {
@@ -68,16 +75,16 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Check if the node can handle the request
 		result := lb.rateLimiter.AllowRequest(node, int64(r.ContentLength))
 		if !result.Allow {
-			http.Error(w, result.Error, http.StatusServiceUnavailable)
-			return
+			retries++
+			continue
 		}
 
 		// Forward the request to the selected node
 		resp, err := http.Post(node.Address, r.Header.Get("Content-Type"), r.Body)
 		if err != nil {
 			log.Printf("Failed to forward request to %s: %v", node.Address, err)
-			http.Error(w, "Failed to forward request", http.StatusInternalServerError)
-			return
+			retries++
+			continue
 		}
 		defer resp.Body.Close()
 
@@ -89,9 +96,14 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, _ := ioutil.ReadAll(resp.Body)
 		w.Write(body)
 
+		// Successfully handled the request, exit the loop and the function
 		return
 	}
+
+	// If all retries fail, return an error
+	http.Error(w, "Failed to forward request after multiple attempts", http.StatusServiceUnavailable)
 }
+
 
 func (lb *LoadBalancer) NextNode() *types.Node {
 	for {
