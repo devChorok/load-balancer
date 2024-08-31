@@ -12,6 +12,9 @@ Unit tests can be found under internal/loadbalancer/algorithms/{name_of_distribu
 
 Integrated stress test can be found under tests/stress.go
 
+## To see Dynamic Scaling, start the load balancer like the above and
+echo "GET http://localhost:8080" | vegeta attack -rate=10 -duration=10s | vegeta report
+
 ## Findings
 
 ### Implications of the Results
