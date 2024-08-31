@@ -4,12 +4,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"sync"
 
 	lc "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_connections"
-	// ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
+	ll "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/least_loaded"
 	rr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/round_robin"
-	// wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
+	wrr "github.com/devChorok/load-balancer/internal/loadbalancer/algorithms/weighted_round_robin"
 	"github.com/devChorok/load-balancer/pkg/types"
 )
 
@@ -24,8 +23,6 @@ type LoadBalancer struct {
 	algorithm   Algorithm
 	rateLimiter *RateLimiter
     nodeCount   int
-
-	mu          sync.Mutex
 }
 
 type Algorithm interface {
@@ -40,14 +37,11 @@ func NewLoadBalancer(nodes []*types.Node, algorithmType string) *LoadBalancer {
 	case AlgorithmRoundRobin:
 		algorithm = rr.NewRoundRobin(nodes)
 	case AlgorithmWeightedRoundRobin:
-		// algorithm = wrr.NewWeightedRoundRobin(nodes)
-		algorithm = rr.NewRoundRobin(nodes)
-
+		algorithm = wrr.NewWeightedRoundRobin(nodes)
 	case AlgorithmLeastConnections:
 		algorithm = lc.NewLeastConnections(nodes)
 	case AlgorithmLeastLoaded:
-		// algorithm = ll.NewLeastLoaded(nodes)
-		algorithm = lc.NewLeastConnections(nodes)
+		algorithm = ll.NewLeastLoaded(nodes)
 
 	default:
 		algorithm = rr.NewRoundRobin(nodes) // Default to round robin
@@ -107,8 +101,6 @@ func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// If all retries fail, return an error
 	http.Error(w, "Failed to forward request after multiple attempts", http.StatusServiceUnavailable)
 }
-
-
 
 func (lb *LoadBalancer) NextNode(contentLength int64) *types.Node {
 	for {
